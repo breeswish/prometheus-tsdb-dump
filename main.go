@@ -58,6 +58,7 @@ func run(blockPath string, minTimestamp int64, maxTimestamp int64) error {
 	}
 
 	var it chunkenc.Iterator
+
 	for postings.Next() {
 		ref := postings.At()
 		lset := labels.Labels{}
@@ -66,13 +67,12 @@ func run(blockPath string, minTimestamp int64, maxTimestamp int64) error {
 			return errors.Wrap(err, "indexr.Series")
 		}
 
+		lenTs := 0
 		for _, meta := range chks {
 			chunk, err := chunkr.Chunk(meta.Ref)
 			if err != nil {
 				return errors.Wrap(err, "chunkr.Chunk")
 			}
-
-			lenTs := 0
 
 			it := chunk.Iterator(it)
 			for it.Next() {
@@ -85,14 +85,13 @@ func run(blockPath string, minTimestamp int64, maxTimestamp int64) error {
 			if it.Err() != nil {
 				return errors.Wrap(err, "iterator.Err")
 			}
-
 			if lenTs == 0 {
 				continue
 			}
+		}
 
-			if err := wr.Write(&lset, lenTs); err != nil {
-				return errors.Wrap(err, fmt.Sprintf("Writer.Write(%v, %v)", lset, lenTs))
-			}
+		if err := wr.Write(&lset, lenTs); err != nil {
+			return errors.Wrap(err, fmt.Sprintf("Writer.Write(%v, %v)", lset, lenTs))
 		}
 	}
 
