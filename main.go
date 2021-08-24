@@ -1,15 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"math"
 	"os"
-	"strings"
-
-	"github.com/ryotarai/prometheus-tsdb-dump/pkg/writer"
 
 	gokitlog "github.com/go-kit/kit/log"
 	"github.com/pkg/errors"
@@ -21,34 +17,21 @@ import (
 
 func main() {
 	blockPath := flag.String("block", "", "Path to block directory")
-	labelKey := flag.String("label-key", "", "")
-	labelValue := flag.String("label-value", "", "")
-	externalLabels := flag.String("external-labels", "{}", "Labels to be added to dumped result in JSON")
 	minTimestamp := flag.Int64("min-timestamp", 0, "min of timestamp of datapoints to be dumped; unix time in msec")
 	maxTimestamp := flag.Int64("max-timestamp", math.MaxInt64, "min of timestamp of datapoints to be dumped; unix time in msec")
-	format := flag.String("format", "victoriametrics", "")
 	flag.Parse()
 
 	if *blockPath == "" {
 		log.Fatal("-block argument is required")
 	}
 
-	if err := run(*blockPath, *labelKey, *labelValue, *format, *minTimestamp, *maxTimestamp, *externalLabels); err != nil {
+	if err := run(*blockPath, *minTimestamp, *maxTimestamp); err != nil {
 		log.Fatalf("error: %s", err)
 	}
 }
 
-func run(blockPath string, labelKey string, labelValue string, outFormat string, minTimestamp int64, maxTimestamp int64, externalLabelsJSON string) error {
-	externalLabelsMap := map[string]string{}
-	if err := json.NewDecoder(strings.NewReader(externalLabelsJSON)).Decode(&externalLabelsMap); err != nil {
-		return errors.Wrap(err, "decode external labels")
-	}
-	var externalLabels labels.Labels
-	for k, v := range externalLabelsMap {
-		externalLabels = append(externalLabels, labels.Label{Name: k, Value: v})
-	}
-
-	wr, err := writer.NewWriter(outFormat)
+func run(blockPath string, minTimestamp int64, maxTimestamp int64) error {
+	wr := NewLabelOnlyWriter()
 
 	logger := gokitlog.NewLogfmtLogger(os.Stderr)
 
@@ -69,7 +52,7 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 	}
 	defer chunkr.Close()
 
-	postings, err := indexr.Postings(labelKey, labelValue)
+	postings, err := indexr.Postings("", "")
 	if err != nil {
 		return errors.Wrap(err, "indexr.Postings")
 	}
@@ -82,9 +65,6 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 		if err := indexr.Series(ref, &lset, &chks); err != nil {
 			return errors.Wrap(err, "indexr.Series")
 		}
-		if len(externalLabels) > 0 {
-			lset = append(lset, externalLabels...)
-		}
 
 		for _, meta := range chks {
 			chunk, err := chunkr.Chunk(meta.Ref)
@@ -92,34 +72,26 @@ func run(blockPath string, labelKey string, labelValue string, outFormat string,
 				return errors.Wrap(err, "chunkr.Chunk")
 			}
 
-			var timestamps []int64
-			var values []float64
+			lenTs := 0
 
 			it := chunk.Iterator(it)
 			for it.Next() {
-				t, v := it.At()
-				if math.IsNaN(v) {
-					continue
-				}
-				if math.IsInf(v, -1) || math.IsInf(v, 1) {
-					continue
-				}
+				t, _ := it.At()
 				if t < minTimestamp || maxTimestamp < t {
 					continue
 				}
-				timestamps = append(timestamps, t)
-				values = append(values, v)
+				lenTs++
 			}
 			if it.Err() != nil {
 				return errors.Wrap(err, "iterator.Err")
 			}
 
-			if len(timestamps) == 0 {
+			if lenTs == 0 {
 				continue
 			}
 
-			if err := wr.Write(&lset, timestamps, values); err != nil {
-				return errors.Wrap(err, fmt.Sprintf("Writer.Write(%v, %v, %v)", lset, timestamps, values))
+			if err := wr.Write(&lset, lenTs); err != nil {
+				return errors.Wrap(err, fmt.Sprintf("Writer.Write(%v, %v)", lset, lenTs))
 			}
 		}
 	}
